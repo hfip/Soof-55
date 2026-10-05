@@ -2,17 +2,19 @@
 
 const config = require('../lib/config');
 const source = require('../lib/source');
+const categories = require('../lib/categories');
 const { proxy } = require('../lib/proxy');
 
 const manifest = {
-  id: 'org.abdulluh.soof55', version: '3.0.0', name: config.name,
+  id: 'org.abdulluh.soof55', version: '3.1.0', name: config.name,
   description: 'أفلام ومسلسلات شوف لايف مع اكتشاف السيرفرات والجودات تلقائياً.',
   resources: ['catalog', 'meta', 'stream'], types: ['movie', 'series'],
   idPrefixes: ['shoof_', 'tt'],
   catalogs: [
     { type: 'series', id: 'shoof-latest', name: 'شوف لايف • آخر الحلقات', extra: [{ name: 'search' }, { name: 'skip' }] },
     { type: 'series', id: 'shoof-series', name: 'شوف لايف • المسلسلات', extra: [{ name: 'search' }, { name: 'skip' }] },
-    { type: 'movie', id: 'shoof-movies', name: 'شوف لايف • الأفلام', extra: [{ name: 'search' }, { name: 'skip' }] }
+    { type: 'movie', id: 'shoof-movies', name: 'شوف لايف • الأفلام', extra: [{ name: 'search' }, { name: 'skip' }] },
+    ...categories.map(({ type, id, name }) => ({ type, id, name, extra: [{ name: 'search' }, { name: 'skip' }] }))
   ],
   behaviorHints: { configurable: false, configurationRequired: false }
 };
