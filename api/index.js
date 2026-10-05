@@ -6,7 +6,7 @@ const categories = require('../lib/categories');
 const { proxy } = require('../lib/proxy');
 
 const manifest = {
-  id: 'org.abdulluh.soof55', version: '3.1.0', name: config.name,
+  id: 'org.abdulluh.soof55', version: '3.2.0', name: config.name,
   description: 'أفلام ومسلسلات شوف لايف مع اكتشاف السيرفرات والجودات تلقائياً.',
   resources: ['catalog', 'meta', 'stream'], types: ['movie', 'series'],
   idPrefixes: ['shoof_', 'tt'],
