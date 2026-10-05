@@ -1,15 +1,20 @@
 {
   "name": "soof-55",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "description": "Shoof Live Stremio addon for Vercel and VPS",
   "main": "server.js",
-  "engines": { "node": ">=22.14" },
+  "engines": {
+    "node": ">=22.14"
+  },
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "check": "node --check api/index.js && node --check server.js && node --check lib/source.js && node --check lib/proxy.js",
+    "check": "node --check api/index.js && node --check server.js && node --check lib/source.js && node --check lib/proxy.js && node --check lib/categories.js",
     "test": "node --test --test-isolation=none",
     "probe": "node --env-file-if-exists=.env scripts/probe.js"
   },
-  "dependencies": { "axios": "^1.12.2", "cheerio": "^1.1.2" }
+  "dependencies": {
+    "axios": "^1.12.2",
+    "cheerio": "^1.1.2"
+  }
 }
