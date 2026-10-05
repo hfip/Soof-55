@@ -29,6 +29,14 @@ test('catalog extraction ignores unrelated links and placeholder images', () => 
   assert.equal(rows[0].poster, 'https://w8.shooflive.cyou/poster.jpg');
 });
 
+test('smart search cards use the current Shoof result layout', () => {
+  const rows = source.cards('<section class="slv2-grid"><a class="slv2-card" href="/series/example/"><div class="slv2-poster"><img src="/poster.jpg"></div><div class="slv2-name">مسلسل تجربة</div></a></section>');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, 'مسلسل تجربة');
+  assert.equal(rows[0].type, 'series');
+  assert.equal(rows[0].poster, 'https://w8.shooflive.cyou/poster.jpg');
+});
+
 test('packed media is decoded without executing embedded functions', () => {
   const packed = "eval(function(p,a,c,k,e,d){throw new Error('must never execute')}('0:\"1://2/3.4\"',5,5,'file|https|cdn.example|video|m3u8'.split('|')))";
   const media = source.mediaFromHtml(packed);
