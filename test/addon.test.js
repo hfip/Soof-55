@@ -37,6 +37,61 @@ test('smart search cards use the current Shoof result layout', () => {
   assert.equal(rows[0].poster, 'https://w8.shooflive.cyou/poster.jpg');
 });
 
+test('archives paginate 100 items and deduplicate overlapping series pages before applying offsets', async () => {
+  const http = require('../lib/http');
+  const original = http.text;
+  const requests = [];
+  http.text = async url => {
+    requests.push(url);
+    const path = new URL(url).pathname;
+    const match = path.match(/^\/(tvshows|movies)\/(?:page\/(\d+)\/)?$/);
+    assert.ok(match, 'Catalog must use the dedicated archive, not the homepage');
+    const folder = match[1], page = Number(match[2] || 1);
+    const size = folder === 'tvshows' ? 40 : 50;
+    const total = folder === 'tvshows' ? 140 : 135;
+    const last = Math.ceil(total / size);
+    // Reproduce overlapping series pages: page 3 repeats half of page 2,
+    // and page 4 supplies enough later entries to fill the next batch.
+    const start = folder === 'tvshows' && page === 3 ? 60 : folder === 'tvshows' && page === 4 ? 100 : (page - 1) * size;
+    const html = Array.from({ length: Math.max(0, Math.min(size, total - start)) }, (_, i) =>
+      `<div class="block-post"><a href="/${folder === 'tvshows' ? 'series' : 'movies'}/item-${start + i}/" title="Item ${start + i}"><img src="/poster.jpg"></a></div>`).join('');
+    return html + `<a href="/${folder}/page/${last}/">Last</a>`;
+  };
+  try {
+    for (const [type, id, total] of [['series', 'shoof-series', 140], ['movie', 'shoof-movies', 135]]) {
+      const first = await source.catalog(type, id, '', 0);
+      const next = await source.catalog(type, id, '', 100);
+      assert.equal(first.length, 100);
+      assert.equal(first[0].name, 'Item 0');
+      assert.equal(first[99].name, 'Item 99');
+      assert.equal(next.length, total - 100);
+      assert.equal(next[0].name, 'Item 100');
+      assert.equal(new Set([...first, ...next].map(row => row.id)).size, total);
+      const partial = await source.catalog(type, id, '', 24);
+      assert.equal(partial.length, 100);
+      assert.equal(partial[0].name, 'Item 24');
+      assert.equal((await source.catalog(type, id, '', 200)).length, 0);
+    }
+    assert.ok(requests.some(url => url.includes('/tvshows/page/3/')));
+    assert.ok(requests.some(url => url.includes('/movies/page/2/')));
+  } finally { http.text = original; }
+});
+
+test('latest episodes still use the homepage and keep their existing 24-item response', async () => {
+  const http = require('../lib/http');
+  const original = http.text;
+  http.text = async url => {
+    assert.equal(new URL(url).pathname, '/');
+    return Array.from({ length: 48 }, (_, i) => `<div class="block-post"><a href="/episode/latest-${i}/" title="الحلقة ${i + 1}"><img src="/poster.jpg"></a></div>`).join('');
+  };
+  try {
+    const rows = await source.catalog('series', 'shoof-latest');
+    assert.equal(rows.length, 24);
+    assert.equal(rows[0].name, 'الحلقة 1');
+    assert.equal(rows[23].name, 'الحلقة 24');
+  } finally { http.text = original; }
+});
+
 test('packed media is decoded without executing embedded functions', () => {
   const packed = "eval(function(p,a,c,k,e,d){throw new Error('must never execute')}('0:\"1://2/3.4\"',5,5,'file|https|cdn.example|video|m3u8'.split('|')))";
   const media = source.mediaFromHtml(packed);
