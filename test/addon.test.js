@@ -139,7 +139,13 @@ async function request(url, method = 'GET') {
 test('manifest and CORS preflight work without external services', async () => {
   const response = await request('/manifest.json');
   const manifest = JSON.parse(response.body);
-  assert.deepEqual(manifest.types, ['movie', 'series']); assert.equal(manifest.catalogs.length, 3);
+  assert.deepEqual(manifest.types, ['movie', 'series']); assert.equal(manifest.catalogs.length, 15);
+  assert.deepEqual(manifest.catalogs.slice(0, 3), [
+    { type: 'series', id: 'shoof-latest', name: 'شوف لايف • آخر الحلقات', extra: [{ name: 'search' }, { name: 'skip' }] },
+    { type: 'series', id: 'shoof-series', name: 'شوف لايف • المسلسلات', extra: [{ name: 'search' }, { name: 'skip' }] },
+    { type: 'movie', id: 'shoof-movies', name: 'شوف لايف • الأفلام', extra: [{ name: 'search' }, { name: 'skip' }] }
+  ]);
+  assert.equal(new Set(manifest.catalogs.map(c => c.id)).size, 15);
   assert.equal((await request('/stream/series/test.json', 'OPTIONS')).statusCode, 204);
   assert.equal((await request('/manifest.json', 'POST')).statusCode, 405);
 });
@@ -172,4 +178,186 @@ test('Vercel rewrite preserves catalog search, pagination and encoded values', a
     assert.equal(response.statusCode, 200);
     assert.deepEqual(captured, ['series', 'shoof-series', 'تجربة & ثانية', 24]);
   } finally { source.catalog = old; }
+});
+
+test('category catalogs use their own pages, remove duplicates and keep search within the category', async () => {
+  const http = require('../lib/http');
+  const original = http.text;
+  http.text = async url => {
+    const path = new URL(url).pathname;
+    if (path === '/dubbed-series/') return '';
+    if (path === '/arabic-series/') return '<div class="block-post"><a href="/series/arabic-example/" title="مسلسل تجربة عربي"><img src="/poster.jpg"></a></div>';
+    const match = path.match(/^\/turkish-series\/(?:page\/(\d+)\/)?$/);
+    assert.ok(match);
+    const page = Number(match[1] || 1);
+    const start = page === 3 ? 60 : (page - 1) * 40;
+    const count = page === 3 ? 80 : 40;
+    return Array.from({ length: count }, (_, i) => `<div class="block-post"><a href="/series/turkish-${start + i}/" title="مسلسل تركي تجربة ${start + i}"><img src="/poster.jpg"></a></div>`).join('') +
+      '<div class="pagination"><a href="/turkish-series/page/3/">Last</a></div>';
+  };
+  try {
+    const first = await source.catalog('series', 'shoof-turkish-series', '', 0);
+    const next = await source.catalog('series', 'shoof-turkish-series', '', 100);
+    assert.equal(first.length, 100);
+    assert.equal(next.length, 40);
+    assert.equal(new Set([...first, ...next].map(r => r.id)).size, 140);
+    assert.equal(next[0].name, 'مسلسل تركي تجربة 100');
+    const arabic = await source.catalog('series', 'shoof-arabic-series', 'تجربة');
+    assert.equal(arabic.length, 1);
+    assert.equal(arabic[0].name, 'مسلسل تجربة عربي');
+    assert.equal((await source.catalog('series', 'shoof-arabic-series', 'تركي')).length, 0);
+    assert.equal((await source.catalog('series', 'shoof-turkish-series', 'عربي')).length, 0);
+    assert.equal((await source.catalog('series', 'shoof-turkish-series', '', 200)).length, 0);
+  } finally { http.text = original; }
+});
+
+test('short series stored as a full movie exposes one playable episode under series', async () => {
+  const http = require('../lib/http');
+  const original = http.text;
+  http.text = async url => {
+    if (url.endsWith('/short-series/')) return '<div class="block-post"><a href="/movies/short-example/" title="مسلسل قصير تجربة"><img src="/poster.jpg"></a></div>';
+    if (url.endsWith('/movies/short-example/')) return '<h1>مسلسل قصير تجربة</h1><iframe src="https://player.example/albaplayer/short/"></iframe>';
+    if (url === 'https://player.example/albaplayer/short/') return '<iframe src="https://embed.example/short"></iframe>';
+    if (url === 'https://embed.example/short') return 'sources:[{file:"https://cdn.example/short.mp4",label:"720p"}]';
+    throw new Error('Unexpected URL');
+  };
+  try {
+    const rows = await source.catalog('series', 'shoof-short-series');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].type, 'series');
+    assert.ok(rows[0].id.startsWith('shoof_short_'));
+    const id = rows[0].id;
+    assert.equal(source.decodeId(id), 'https://w8.shooflive.cyou/movies/short-example/');
+    const meta = await source.meta('series', id);
+    assert.equal(meta.videos.length, 1);
+    assert.equal(meta.videos[0].id, `${id}:1:1`);
+    const streams = await source.streams('series', meta.videos[0].id);
+    assert.equal(streams[0].url, 'https://cdn.example/short.mp4');
+    assert.equal(await source.meta('movie', id), null);
+    assert.deepEqual(await source.streams('series', `${id}:2:1`), []);
+    assert.deepEqual(await source.streams('movie', id), []);
+    assert.throws(() => source.decodeId('shoof_short_' + Buffer.from('/series/example/').toString('base64url')));
+  } finally { http.text = original; }
+});
+
+test('VOE encoded JSON returns the real HLS and ignores its decoy video', () => {
+  const url = 'https://cdn.example/real/master.m3u8?token=abc&expires=123';
+  const json = JSON.stringify({ source: url });
+  const reversed = Buffer.from(json).toString('base64').split('').reverse().join('');
+  const shifted = [...reversed].map(c => String.fromCharCode(c.charCodeAt(0) + 3)).join('');
+  const rot = Buffer.from(shifted, 'latin1').toString('base64').replace(/[a-zA-Z]/g,
+    c => String.fromCharCode(c.charCodeAt(0) + (c.toLowerCase() <= 'm' ? 13 : -13)));
+  const encoded = rot.match(/.{1,4}/g).join('!!');
+  const html = `var source='https://ads.example/decoy.mp4';<script type="application/json">["${encoded}"]</script>`;
+  assert.deepEqual(source.mediaFromHtml(html), [{ url, format: 'HLS', quality: null }]);
+});
+
+test('VK escaped video URLs retain qualities and signed query arguments', () => {
+  const html = String.raw`var playerParams={"params":[{"url360":"https:\/\/cdn.example\/video.mp4?sig=abc\u0026x=1","url720":"https:\/\/cdn.example\/video720.mp4?sig=def"}]};`;
+  assert.deepEqual(source.mediaFromHtml(html), [
+    { url: 'https://cdn.example/video.mp4?sig=abc&x=1', format: 'MP4', quality: '360p' },
+    { url: 'https://cdn.example/video720.mp4?sig=def', format: 'MP4', quality: '720p' }
+  ]);
+});
+
+test('player discovers all five providers despite case changes and follows the VOE redirect', async () => {
+  const http = require('../lib/http'), original = http.text, requests = [];
+  const names = ['AnaFast', 'MP4Plus', 'VidSpeed', 'Vk', 'Voe'];
+  const menu = names.map((name, i) => `<a class="aplr-link" href="https://player.example/albaplayer/ahla-naseeb-s01e05?serv=${i + 1}">${name}</a>`).join('');
+  http.text = async url => {
+    requests.push(url);
+    const u = new URL(url);
+    if (u.host === 'player.example') {
+      const number = Number(u.searchParams.get('serv') || 1);
+      return menu + `<iframe src="https://embed.example/${number}"></iframe>`;
+    }
+    if (u.pathname === '/5') return `<script>window.location.href='https://voe.example/e/test';</script>`;
+    if (u.host === 'voe.example') return `file:'https://cdn.example/shared.mp4',label:'720p'`;
+    // Intentionally identical media URLs across servers: all choices survive.
+    return `file:'https://cdn.example/shared.mp4',label:'720p'`;
+  };
+  try {
+    const media = await source.resolvePlayer('https://player.example/albaplayer/Ahla.Naseeb.S01E05', 'https://source.example/');
+    assert.deepEqual(new Set(media.map(row => row.server)), new Set(names));
+    assert.equal(media.length, 5);
+    assert.ok(requests.includes('https://embed.example/4'));
+    assert.ok(requests.includes('https://voe.example/e/test'));
+    assert.equal(media.find(row => row.server === 'Voe').headers.Referer, 'https://voe.example/');
+  } finally { http.text = original; }
+});
+
+test('dubbed edition has all 96 episodes, distinct seasons, and no recommended series contamination', async () => {
+  const http = require('../lib/http'), original = http.text;
+  const card = (season, ep) => `<article class="postEp"><div class="block-post"><a href="/episode/fixture-love-s${season}e${ep}/" title="مسلسل أنت من أحب الموسم ${season} الحلقة ${ep} مدبلجة"><img src="/ep.jpg"></a></div></article>`;
+  const id = source.encodeId('/series/fixture-love-dubbed/');
+  http.text = async url => {
+    if (url.endsWith('/series/fixture-love-dubbed/')) return '<h1>مسلسل أنت من أحب مدبلج</h1>' +
+      Array.from({ length: 75 }, (_, i) => card(1, i + 1)).join('') + Array.from({ length: 21 }, (_, i) => card(2, i + 1)).join('') +
+      '<div class="block-post"><a href="/episode/unrelated-999/" title="مسلسل آخر الحلقة 999"></a></div>';
+    if (url.endsWith('/episode/fixture-love-s2e21/')) return '<h1>مسلسل أنت من أحب الموسم 2 الحلقة 21 مدبلجة</h1><iframe src="https://player.example/albaplayer/season-two"></iframe>';
+    if (url.includes('player.example')) return '<iframe src="https://embed.example/season-two"></iframe>';
+    if (url.includes('embed.example')) return `file:'https://cdn.example/season-two.mp4',label:'720p'`;
+    throw new Error('Unexpected episode selection');
+  };
+  try {
+    const meta = await source.meta('series', id);
+    assert.equal(meta.videos.length, 96);
+    assert.equal(meta.videos.filter(row => row.season === 1).length, 75);
+    assert.equal(meta.videos.filter(row => row.season === 2).length, 21);
+    assert.equal((await source.streams('series', `${id}:2:21`))[0].url, 'https://cdn.example/season-two.mp4');
+    assert.deepEqual(await source.streams('series', `${id}:2:22`), []);
+  } finally { http.text = original; }
+});
+
+test('Turkish catalog offers matching dubbed editions as separate posters', async () => {
+  const http = require('../lib/http'), original = http.text;
+  delete require.cache[require.resolve('../lib/source')];
+  const fresh = require('../lib/source');
+  const card = (slug, title) => `<div class="block-post"><a href="/series/${slug}/" title="${title}"><img src="/poster.jpg"></a></div>`;
+  http.text = async url => {
+    if (url.endsWith('/turkish-series/')) return card('translated', 'مسلسل انت من احب');
+    if (url.endsWith('/dubbed-series/')) return card('dubbed', 'مسلسل أنت من أحب مدبلج') + card('different', 'مسلسل مختلف مدبلج');
+    throw new Error('Unexpected category request');
+  };
+  try {
+    const rows = await fresh.catalog('series', 'shoof-turkish-series');
+    assert.equal(rows.length, 2);
+    assert.match(rows[0].name, /مترجم/);
+    assert.match(rows[1].name, /مدبلج/);
+    assert.notEqual(rows[0].id, rows[1].id);
+    assert.equal((await fresh.catalog('series', 'shoof-dubbed-series')).length, 2);
+  } finally { http.text = original; }
+});
+
+test('legacy VOE base64 sources are decoded as URLs only', () => {
+  const url = 'https://cdn.example/legacy.m3u8?sig=abc';
+  assert.equal(source.mediaFromHtml(`var sources={'hls':'${Buffer.from(url).toString('base64')}'};`)[0].url, url);
+});
+
+test('temporary dubbed archive failure does not break the Turkish catalog', async () => {
+  const http = require('../lib/http'), original = http.text, oldWarn = http.warn;
+  delete require.cache[require.resolve('../lib/source')];
+  const fresh = require('../lib/source');
+  http.warn = () => {};
+  http.text = async url => {
+    if (url.endsWith('/turkish-series/')) return '<div class="block-post"><a href="/series/still-available/" title="مسلسل متاح"></a></div>';
+    throw new Error('Dubbed archive unavailable');
+  };
+  try { assert.equal((await fresh.catalog('series', 'shoof-turkish-series'))[0].name, 'مسلسل متاح'); }
+  finally { http.text = original; http.warn = oldWarn; }
+});
+
+test('episode title takes precedence over an outdated numeric URL slug', async () => {
+  const http = require('../lib/http'), original = http.text;
+  const id = source.encodeId('/episode/fixture-title-الحلقة-1-2/');
+  http.text = async url => {
+    if (new URL(url).pathname.startsWith('/episode/')) return '<h1>مسلسل تجربة الحلقة 2 مدبلجة</h1><iframe src="https://player.example/albaplayer/title-priority"></iframe>';
+    if (url.includes('player.example')) return '<iframe src="https://embed.example/title-priority"></iframe>';
+    return `file:'https://cdn.example/correct-episode.mp4',label:'720p'`;
+  };
+  try {
+    assert.equal((await source.meta('series', id)).videos[0].episode, 2);
+    assert.equal((await source.streams('series', `${id}:1:2`))[0].url, 'https://cdn.example/correct-episode.mp4');
+    assert.deepEqual(await source.streams('series', `${id}:1:1`), []);
+  } finally { http.text = original; }
 });
