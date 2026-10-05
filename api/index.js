@@ -33,7 +33,11 @@ function createHandler({ enableProxy = false } = {}) {
     if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
     if (!['GET', 'HEAD'].includes(req.method)) { send(res, { error: 'Method not allowed' }, 405); return; }
     const url = new URL(req.url, 'http://localhost');
-    const path = url.pathname;
+    // Vercel can replace req.url with the rewrite destination. Carry the
+    // original route explicitly; direct VPS requests still use pathname.
+    const routed = req.query?.route ?? url.searchParams.get('route');
+    const originalRoute = Array.isArray(routed) ? routed[0] : routed;
+    const path = typeof originalRoute === 'string' ? '/' + originalRoute.replace(/^\/+/, '') : url.pathname;
     if (path === '/' || path === '/manifest.json') return send(res, manifest, 200, 3600);
     if (path === '/health' || path === '/healthz') return send(res, { status: 'ok', version: manifest.version, tmdbEnabled: !!config.tmdbKey, proxyEnabled: enableProxy && config.proxySecret.length >= 32 });
     if (path === '/proxy/mp4') {
