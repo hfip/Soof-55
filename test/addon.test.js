@@ -90,3 +90,23 @@ test('invalid pagination is rejected before any network requests', async () => {
   assert.equal((await request('/catalog/series/shoof-series/skip=-1.json')).statusCode, 400);
   assert.equal((await request('/catalog/movie/shoof-series.json')).statusCode, 404);
 });
+
+test('Vercel rewrite preserves manifest and health routes', async () => {
+  const manifest = await request('/api/index?route=manifest.json');
+  assert.equal(manifest.statusCode, 200);
+  assert.equal(JSON.parse(manifest.body).id, 'org.abdulluh.soof55');
+  const health = await request('/api/index?route=health');
+  assert.equal(JSON.parse(health.body).status, 'ok');
+});
+
+test('Vercel rewrite preserves catalog search, pagination and encoded values', async () => {
+  const old = source.catalog;
+  let captured;
+  source.catalog = async (...args) => { captured = args; return []; };
+  try {
+    const path = 'catalog/series/shoof-series/search=' + encodeURIComponent('تجربة & ثانية') + '&skip=24.json';
+    const response = await request('/api/index?route=' + encodeURIComponent(path));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(captured, ['series', 'shoof-series', 'تجربة & ثانية', 24]);
+  } finally { source.catalog = old; }
+});
